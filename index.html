@@ -178,6 +178,8 @@ dl.kv dt{color:var(--muted)} dl.kv dd{margin:0;font-weight:600;min-width:0;overf
       <div class="muted">Código de verificação</div>
       <div class="code" id="rCode"></div>
     </div>
+    <p id="rEnvio" class="muted" hidden></p>
+    <div class="row"><button class="btn" type="button" id="rRetry" hidden>Tentar enviar de novo</button></div>
     <p class="muted">Mostre este ecrã ao professor. Não feche a página antes de ele registar a nota e o código.</p>
   </section>
 </main>
@@ -210,7 +212,8 @@ dl.kv dt{color:var(--muted)} dl.kv dd{margin:0;font-weight:600;min-width:0;overf
       <h2>Este computador</h2>
       <p class="muted">O bloqueio de "só uma tentativa" fica guardado no browser de cada computador. Limpe-o se um aluno precisar de repetir aqui, ou antes de outra turma usar a mesma máquina.</p>
       <p id="tLocal"></p>
-      <div class="row"><button class="btn danger" type="button" id="tClear">Limpar tentativas deste computador</button><button class="btn" type="button" id="tBack2">Voltar ao início</button></div>
+      <p id="tSheetOut" class="muted" hidden></p>
+      <div class="row"><button class="btn danger" type="button" id="tClear">Limpar tentativas deste computador</button><button class="btn" type="button" id="tSheet">Testar envio por email</button><button class="btn" type="button" id="tBack2">Voltar ao início</button></div>
     </section>
   </div>
 </main>
@@ -222,6 +225,10 @@ const CODIGO_ACESSO = "ELETRICIDADE";   // código que dá aos alunos no início
 const PIN_PROFESSOR  = "2026";        // PIN do modo professor
 const DURACAO_MIN   = 50;
 const SEGREDO       = "epave-elet-glauco-M6p";
+const TESTE_NOME    = "Teste de Eletricidade (slides 1-53)";
+// Envio dos resultados por email (FormSubmit). Vazio = não envia.
+// Depois de confirmar o primeiro email, pode trocar o endereço pelo código aleatório que o FormSubmit lhe der.
+const URL_ENVIO     = "https://formsubmit.co/ajax/epave.glauco@gmail.com";
 
 /* ====== QUESTÕES ====== */
 const VF=[
@@ -390,7 +397,42 @@ function showResult(){
   $("rResp").textContent=Object.keys(st.ans).length+" de "+st.items.length;
   $("rIni").textContent=hhmm(st.ini);$("rFim").textContent=hhmm(st.fim);
   $("rCode").textContent=code6(st.nome,st.num,st.turma,fmtNota(st.nota),ok?"C":"T");
+  if(URL_ENVIO&&!st.enviado&&st.envio!=="a enviar")enviar();else paintEnvio();
 }
+
+/* ====== envio para a Google Sheet ====== */
+// ordem das opções na versão impressa (índices originais; 0 = resposta certa)
+const PRINT=[[1,0,2,3],[1,2,0,3],[0,1,2,3],[1,2,3,0],[1,0,2,3],[0,1,2,3],[1,2,0,3],[1,2,3,0],[1,0,2,3],[1,2,0,3]];
+function post(b){
+  const f=new FormData();
+  f.append("_subject",b.teste+" · "+b.nome+" (n.º "+b.num+", "+b.turma+") · "+fmtNota(+b.nota)+" valores");
+  f.append("_template","table");f.append("_captcha","false");
+  const campos=[["Teste",b.teste],["Nome",b.nome],["Número",b.num],["Turma",b.turma],["Estado",b.estado],["Motivo",b.motivo],
+    ["Nota (0-20)",fmtNota(+b.nota)],["Código de verificação",b.codigo],["Respondidas",b.respondidas],["Início",b.inicio],["Fim",b.fim]];
+  campos.forEach(([k,v])=>f.append(k,v));
+  b.colunas.forEach((c,i)=>f.append("Questão "+c,b.respostas[i]));
+  return fetch(URL_ENVIO,{method:"POST",keepalive:true,headers:{"Accept":"application/json"},body:f})
+    .then(r=>{if(!r.ok)throw new Error("HTTP "+r.status);return r.json().catch(()=>({}))})
+    .then(j=>{if(j&&(j.success===false||j.success==="false"))throw new Error(j.message||"recusado");return j});
+}
+function enviar(){
+  if(!URL_ENVIO){paintEnvio();return}
+  const ok=st.status==="concluido",cols=[],resp=[];
+  VF.forEach((q,i)=>{const a=st.ans["v"+i];cols.push("I."+(i+1));resp.push(a?a+((a==="V")===q[1]?" ✓":" ✗"):"—")});
+  MC.forEach((q,i)=>{const a=st.ans["m"+i];cols.push("II."+(i+1));resp.push(a===undefined?"—":"ABCD"[PRINT[i].indexOf(+a)]+(a==="0"?" ✓":" ✗"))});
+  const body={teste:TESTE_NOME,nome:st.nome,num:st.num,turma:st.turma,estado:ok?"Concluído":"Terminado por saída",motivo:st.motivo,
+    nota:st.nota,codigo:code6(st.nome,st.num,st.turma,fmtNota(st.nota),ok?"C":"T"),respondidas:Object.keys(st.ans).length+"/"+st.items.length,
+    inicio:new Date(st.ini).toLocaleString("pt-PT"),fim:new Date(st.fim).toLocaleString("pt-PT"),colunas:cols,respostas:resp};
+  st.envio="a enviar";save();paintEnvio();
+  post(body).then(()=>{st.enviado=true;st.envio="ok";save();paintEnvio()}).catch(()=>{st.envio="erro";save();paintEnvio()});
+}
+function paintEnvio(){
+  const p=$("rEnvio"),b=$("rRetry");
+  if(!URL_ENVIO){p.hidden=true;b.hidden=true;return}
+  p.hidden=false;b.hidden=st.envio!=="erro";
+  p.textContent=st.envio==="ok"?"✓ Resultado enviado para o professor.":st.envio==="erro"?"Não foi possível enviar o resultado (sem internet?). Tente de novo ou avise o professor.":"A enviar o resultado ao professor…";
+}
+$("rRetry").addEventListener("click",()=>{st.envio="";enviar()});
 
 /* ====== professor ====== */
 $("fPin").addEventListener("submit",e=>{e.preventDefault();
@@ -402,6 +444,12 @@ $("fVerify").addEventListener("submit",e=>{e.preventDefault();
   const o=$("vOut");o.hidden=false;o.className="verdict "+(good?"ok":"bad");
   o.textContent=good?"Código válido: os dados e a nota correspondem ao teste.":"Código não corresponde. Confira nome, número, turma, nota e estado exatamente como aparecem no ecrã do aluno."});
 function listLocal(){const k=LS.keys().filter(k=>k.startsWith("elet:feito:"));$("tLocal").textContent=k.length?k.length+" tentativa(s) guardada(s) neste browser: n.º "+k.map(x=>x.slice(11)).join(", ")+".":"Nenhuma tentativa guardada neste browser."}
+$("tSheet").addEventListener("click",()=>{const o=$("tSheetOut");o.hidden=false;
+  if(!URL_ENVIO){o.textContent="O envio por email está desligado (URL_ENVIO vazio).";return}
+  post({teste:TESTE_NOME,nome:"TESTE DE LIGAÇÃO",num:"0",turma:"-",estado:"Teste",motivo:"Enviado do modo professor",nota:0,codigo:"-",respondidas:"-",
+    inicio:new Date().toLocaleString("pt-PT"),fim:"",colunas:[],respostas:[]})
+  .then(()=>o.textContent="Enviado. Veja o seu email: na 1.ª vez chega um pedido de confirmação do FormSubmit (clique em Activate); depois chegam os resultados.")
+  .catch(e=>o.textContent="Falhou o envio ("+e.message+"). Verifique a internet.")});
 $("tClear").addEventListener("click",()=>{LS.keys().filter(k=>k.startsWith("elet:")).forEach(LS.del);listLocal()});
 const back=()=>{$("tArea").hidden=true;$("tArea").style.display="";show("scLogin")};
 $("tBack1").addEventListener("click",back);$("tBack2").addEventListener("click",back);
